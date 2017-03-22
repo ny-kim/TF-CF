@@ -1,6 +1,8 @@
 import time
+from optparse import OptionParser
 from collections import deque
 
+import pandas as pd
 import numpy as np
 import tensorflow as tf
 from six import next
@@ -12,42 +14,62 @@ import ops
 np.random.seed(13575)
 
 BATCH_SIZE = 1000
-USER_NUM = 6040
-ITEM_NUM = 3952
+USER_NUM = 772
+ITEM_NUM = 17548
 DIM = 15
 EPOCH_MAX = 100
 DEVICE = "/cpu:0"
 
 
 def clip(x):
-    return np.clip(x, 1.0, 5.0)
+    return np.floor(x)
 
 
 def make_scalar_summary(name, val):
     return summary_pb2.Summary(value=[summary_pb2.Summary.Value(tag=name, simple_value=val)])
 
 
-def get_data():
-    df = dataio.read_process("/tmp/movielens/ml-1m/ratings.dat", sep="::")
-    rows = len(df)
-    df = df.iloc[np.random.permutation(rows)].reset_index(drop=True)
-    split_index = int(rows * 0.9)
-    df_train = df[0:split_index]
-    df_test = df[split_index:].reset_index(drop=True)
-    return df_train, df_test
+def _read_csv(path):
+    return pd.read_csv(path,
+                       index_col='id',
+                       delimiter=',',
+                       quotechar='|',
+                       quoting=csv.QUOTE_NONE,
+                       escapechar='\\')
+
+def _indexing(train_items, test_items):
+    items = pd.Series(train_items + test_items).unique().tolist()
+    new_ids = map(str, list(range(len(items))))
+    return dict(zip(items, new_ids))
+
+
+def get_data(train_path, test_path):
+    raw_train_set = _read_csv(train_path)
+    raw_test_set = _read_csv(test_path)
+
+    train_set = raw_train_set[raw_train_set.type == 'explicit']
+    test_set = raw_test_set[raw_test_set.type == 'explicit']
+
+    users = _indexing(train_set.source.tolist(), test_set.source.tolist())
+    tracks = _indexing(train_set.target.tolist(), test_set.target.tolist())
+
+    train_set.replace({'source': users, 'target': tracks}, inplace=True)
+    test_set.replace({'source': users, 'target': tracks}, inplace=True)
+
+    return (train_set, test_set)
 
 
 def svd(train, test):
     samples_per_batch = len(train) // BATCH_SIZE
 
-    iter_train = dataio.ShuffleIterator([train["user"],
-                                         train["item"],
-                                         train["rate"]],
+    iter_train = dataio.ShuffleIterator([train['source'],
+                                         train['target'],
+                                         train['weight']],
                                         batch_size=BATCH_SIZE)
 
-    iter_test = dataio.OneEpochIterator([test["user"],
-                                         test["item"],
-                                         test["rate"]],
+    iter_test = dataio.OneEpochIterator([test['source'],
+                                         test['target'],
+                                         test['weight']],
                                         batch_size=-1)
 
     user_batch = tf.placeholder(tf.int32, shape=[None], name="id_user")
@@ -93,6 +115,17 @@ def svd(train, test):
 
 
 if __name__ == '__main__':
-    df_train, df_test = get_data()
-    svd(df_train, df_test)
+    parser = OptionParser()
+    parser.add_option('-tr', '--train',
+                      dest='train_path',
+                      help='training dataset file path',
+                      metavar='FILE')
+    parser.add_option('-te', '--test',
+                      dest='test_path',
+                      help='testing dataset file path',
+                      metavar='FILE')
+    (option, _) = parser.parse_args()
+
+    (trains, tests) = get_data(option.train_path, option.test_path)
+    svd(trains, tests)
     print("Done!")
